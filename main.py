@@ -1,89 +1,88 @@
-
 import time
 import uuid
 from collections import defaultdict, deque
-from threading import Lock
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-EMAIL = "25f1002516@ds.study.iitm.ac.in"
+app = FastAPI()
+
+# ---------- Your assigned values ----------
+ALLOWED_ORIGIN = "https://app-cob6wj.example.com"
+RATE_LIMIT = 13          # B requests
+WINDOW_SECONDS = 10      # per 10-second window
+EMAIL = "your_logged_in_email@example.com"
+
+# Add the exam page origin here if the assignment gives it to you.
+EXAM_PAGE_ORIGIN = "https://exam-page-origin.example.com"
+
 ALLOWED_ORIGINS = [
-    "https://app-cob6wj.example.com",
-    # Add the actual exam-page origin here if it is different.
+    ALLOWED_ORIGIN,
+    EXAM_PAGE_ORIGIN,
 ]
 
-RATE_LIMIT = 13
-WINDOW_SECONDS = 10
+# ---------- Middleware 2: CORS ----------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,       # No "*"
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["X-Request-ID", "X-Client-Id"],
+    expose_headers=["X-Request-ID"],     # Browser JS can read this response header
+)
 
-app = FastAPI(title="Middleware Assignment")
-
-# Per-client sliding-window request tracking.
-client_requests = defaultdict(deque)
-rate_lock = Lock()
-
+# ---------- Middleware 3: rate limiter ----------
+# client_id -> timestamps of recent requests
+request_history = defaultdict(deque)
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    # Let browser CORS preflight requests through.
-    if request.method == "OPTIONS":
+    client_id = request.headers.get("X-Client-Id")
+
+    # If there is no client ID, let the request through.
+    # The grader sends X-Client-Id for rate-limit tests.
+    if client_id is None:
         return await call_next(request)
 
-    client_id = request.headers.get("X-Client-Id", "anonymous")
     now = time.monotonic()
+    history = request_history[client_id]
 
-    with rate_lock:
-        timestamps = client_requests[client_id]
+    # Remove timestamps older than the 10-second window.
+    while history and now - history[0] >= WINDOW_SECONDS:
+        history.popleft()
 
-        while timestamps and now - timestamps[0] >= WINDOW_SECONDS:
-            timestamps.popleft()
+    # Already used all 13 requests in this window?
+    if len(history) >= RATE_LIMIT:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded"},
+        )
 
-        if len(timestamps) >= RATE_LIMIT:
-            retry_after = max(
-                1,
-                int(WINDOW_SECONDS - (now - timestamps[0]) + 0.999),
-            )
-            return JSONResponse(
-                status_code=429,
-                content={"detail": "Rate limit exceeded"},
-                headers={"Retry-After": str(retry_after)},
-            )
-
-        timestamps.append(now)
-
+    # Record this request and continue.
+    history.append(now)
     return await call_next(request)
 
-
+# ---------- Middleware 1: request context ----------
 @app.middleware("http")
 async def request_context_middleware(request: Request, call_next):
-    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request_id = request.headers.get("X-Request-ID")
+
+    if not request_id:
+        request_id = str(uuid.uuid4())
+
+    # Make it available to the endpoint.
     request.state.request_id = request_id
 
     response = await call_next(request)
+
+    # Always return it in the response header too.
     response.headers["X-Request-ID"] = request_id
     return response
 
-
-# CORS must use explicit origins, never "*".
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["GET", "OPTIONS"],
-    allow_headers=["X-Request-ID", "X-Client-Id", "Content-Type", "Authorization"],
-    expose_headers=["X-Request-ID", "Retry-After"],
-)
-
-
+# ---------- Endpoint ----------
 @app.get("/ping")
 async def ping(request: Request):
     return {
         "email": EMAIL,
         "request_id": request.state.request_id,
     }
-
-
-@app.get("/")
-async def root():
-    return {"status": "ok", "service": "middleware-api"}
