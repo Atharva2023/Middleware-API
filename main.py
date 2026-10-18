@@ -71,7 +71,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "OPTIONS"],
-    allow_headers=["X-Request-ID", "X-Client-Id", "Content-Type"],
+    allow_headers=["X-Request-ID", "X-Client-Id", "Content-Type", "Authorization"],
     expose_headers=["X-Request-ID", "Retry-After"],
 )
 
